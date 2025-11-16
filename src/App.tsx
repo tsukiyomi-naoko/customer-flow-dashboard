@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState, useEffect } from "react";
 import {
   Card,
@@ -31,13 +30,12 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Calendar as CalendarIcon, Download, RefreshCw, Clock3, Pencil } from "lucide-react";
+import { Calendar as CalendarIcon, Download, RefreshCw, Clock3, Pencil, ChevronUp } from "lucide-react";
 
 // -------------------------------
 // Helpers: mock data + utilities
 // -------------------------------
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
-const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]; // legacy (kept)
 const dayNamesMap = {
   en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
   fr: ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"],
@@ -164,11 +162,12 @@ const messages = {
     hourLabel: "Heure",
     totalLabel: "Total",
     trailingWeek: "Semaine en cours",
-  }
+  },
 };
-const t = (k, lang) => (messages[lang] && messages[lang][k]) || k;
+const t = (k: keyof typeof messages["en"], lang: "en" | "fr") => (messages as any)[lang][k] ?? (k as string);
 
-function seededRand(seed) {
+function seededRand(seed: number) {
+  // simple xorshift for reproducible mock data
   let x = seed | 0;
   return () => {
     x ^= x << 13;
@@ -181,32 +180,32 @@ function seededRand(seed) {
 function makeMockSeries(days = 60, seed = 1337) {
   const rnd = seededRand(seed);
   const today = new Date();
-  const arr = [];
+  const arr: { date: Date; dateKey: string; weekday: number; customers: number }[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today);
     d.setDate(today.getDate() - i);
     const weekday = d.getDay();
     const base = [0.8, 0.9, 0.95, 1.0, 1.2, 1.35, 1.15][weekday];
     const trend = 0.9 + (i / days) * 0.2;
-    const noise = 0.85 + Math.random() * 0.3;
+    const noise = 0.85 + rnd() * 0.3;
     const customers = Math.round(140 * base * trend * noise);
     arr.push({ date: d, dateKey: d.toISOString().slice(0, 10), weekday, customers });
   }
   return arr;
 }
 
-function groupByWeek(data) {
-  const byWeek = new Map();
+function groupByWeek(data: ReturnType<typeof makeMockSeries>) {
+  const byWeek = new Map<string, { key: string; total: number; days: number }>();
   for (const row of data) {
     const d = row.date;
     const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-    const dayNum = tmp.getUTCDay() || 7;
+    const dayNum = tmp.getUTCDay() || 7; // 1..7
     tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
     const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
-    const weekNo = Math.ceil(((tmp - yearStart) / 86400000 + 1) / 7);
+    const weekNo = Math.ceil(((tmp.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
     const key = `${tmp.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
     if (!byWeek.has(key)) byWeek.set(key, { key, total: 0, days: 0 });
-    const bucket = byWeek.get(key);
+    const bucket = byWeek.get(key)!;
     bucket.total += row.customers;
     bucket.days += 1;
   }
@@ -214,30 +213,41 @@ function groupByWeek(data) {
 }
 
 function makeHourlyProfile(seed = 42, weekday = 3) {
-  return Array.from({length:24}, (_,h)=>{
+  const rnd = seededRand(seed + weekday * 97);
+  return HOURS.map((h) => {
     const morning = Math.max(0, 1 - Math.abs(h - 12) / 6);
     const evening = Math.max(0, 1 - Math.abs(h - 17.5) / 4);
     const weekendBoost = weekday === 5 || weekday === 6 ? 1.2 : 1.0;
-    const val = (morning * 0.8 + evening * 1.0) * weekendBoost * (0.8 + Math.random() * 0.4);
+    const val = (morning * 0.8 + evening * 1.0) * weekendBoost * (0.8 + rnd() * 0.4);
     return Math.round(val * 100);
   });
 }
 
-function recommendedHours(hourly, take = 6) {
+function recommendedHours(hourly: number[], take = 6) {
   const pairs = hourly.map((v, h) => ({ h, v }));
   pairs.sort((a, b) => a.v - b.v);
-  return pairs.slice(0, take).map((p) => p.h).sort((a, b) => a - b);
+  return pairs
+    .slice(0, take)
+    .map((p) => p.h)
+    .sort((a, b) => a - b);
 }
 
-function fmtDateShort(d) {
+function fmtDateShort(d: Date) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function toCSV(rows, headers) {
-  const esc = (v) => typeof v === "string" ? '"' + v.replace(/"/g, '""') + '"' : v ?? "";
+// CSV helpers
+function toCSV(rows: any[], headers: string[]) {
+  const esc = (v: any) => (typeof v === "string" ? '"' + v.replace(/"/g, '""') + '"' : v ?? "");
   return [headers.join(","), ...rows.map((r) => headers.map((h) => esc(r[h])).join(","))].join("\n");
 }
-function downloadCSV(filename, text) {
+function toCSVWithHeaders(rows: any[], keys: string[], headerLabels: string[]) {
+  const esc = (v: any) => (typeof v === "string" ? '"' + v.replace(/"/g, '""') + '"' : v ?? "");
+  const header = headerLabels.join(",");
+  const lines = rows.map((r) => keys.map((k) => esc(r[k])).join(","));
+  return [header, ...lines].join("\n");
+}
+function downloadCSV(filename: string, text: string) {
   const blob = new Blob([text], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -248,127 +258,519 @@ function downloadCSV(filename, text) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
-function toCSVWithHeaders(rows, keys, headerLabels) {
-  const esc = (v) => (typeof v === "string" ? '"' + v.replace(/"/g, '""') + '"' : v ?? "");
-  const header = headerLabels.join(",");
-  const lines = rows.map((r) => keys.map((k) => esc(r[k])).join(","));
-  return [header, ...lines].join("\n");
+function sanitizeFileNameSegment(s: string | null | undefined) {
+  return String(s || "store").replace(/[^\w-]+/g, "_");
 }
 
-export default function App() {
-  const [seed, setSeed] = React.useState(1337);
-  const [selectedDate, setSelectedDate] = React.useState(new Date());
-  const [view, setView] = React.useState("day");
-  const [lang, setLang] = React.useState("en");
+// -------------------------------
+// Tiny runtime tests (dev only) — won’t throw, just logs
+// -------------------------------
+function runDevTests() {
+  try {
+    // toCSV quoting & newline
+    const rows = [
+      { a: "plain", b: 1 },
+      { a: "with,comma", b: 2 },
+      { a: 'with "quote"', b: 3 },
+    ];
+    const csv = toCSV(rows, ["a", "b"]);
+    console.assert(csv.split("\n").length === 4, "CSV should have header + 3 rows");
+    console.assert(csv.includes('"with,comma"'), "CSV should quote values containing commas");
+    console.assert(csv.includes('"with ""quote"""'), "CSV should escape quotes");
 
-  const [editingTitle, setEditingTitle] = React.useState(false);
-  const [titleInput, setTitleInput] = React.useState("");
-  const [customTitle, setCustomTitle] = React.useState(null);
-  const storageKeyForLang = (lng) => `cfd.title.${lng}`;
-  React.useEffect(()=>{
+    // recommendedHours returns sorted hours of requested length
+    const rh = recommendedHours([10, 5, 7, 1, 9], 2);
+    console.assert(Array.isArray(rh) && rh.length === 2, "recommendedHours length");
+    console.assert(rh[0] <= rh[1], "recommendedHours sorted asc");
+
+    // groupByWeek averages for a simple one-week sample
+    const base = new Date("2025-01-06"); // Monday
+    const sample = Array.from({ length: 7 }, (_, i) => ({
+      date: new Date(base.getFullYear(), base.getMonth(), base.getDate() + i),
+      dateKey: "n/a",
+      weekday: 0,
+      customers: i + 1, // 1..7 => total 28, avg 4
+    }));
+    const weekly = groupByWeek(sample as any);
+    console.assert(weekly[0].total === 28 && weekly[0].avg === 4, "groupByWeek avg");
+
+    // CSV localization smoke tests
+    const sampleRows = [{ date: "2025-01-01", weekday: "Wed", customers: 10 }];
+    const enHeader = toCSVWithHeaders(sampleRows, ["date", "weekday", "customers"], [t("dateLabel", "en"), t("weekdayLabel", "en"), t("customers", "en")]).split("\n")[0];
+    const frHeader = toCSVWithHeaders(sampleRows, ["date", "weekday", "customers"], [t("dateLabel", "fr"), t("weekdayLabel", "fr"), t("customers", "fr")]).split("\n")[0];
+    console.assert(enHeader === "Date,Weekday,Customers", "EN CSV header labels");
+    console.assert(frHeader === "Date,Jour,Clients", "FR CSV header labels");
+
+    // i18n: trailing week label
+    console.assert(t("trailingWeek", "en") === "Current week", "EN trailingWeek label");
+    console.assert(t("trailingWeek", "fr") === "Semaine en cours", "FR trailingWeek label");
+
+    // Extra tests
+    const twoLines = toCSVWithHeaders([{ hour: 9, index: 42 }], ["hour", "index"], ["Hour", "Index"]);
+    console.assert(twoLines.split("\n").length === 2, "CSV should be header + 1 row");
+
+    // Filename sanitization
+    console.assert(sanitizeFileNameSegment("My Store 01!") === "My_Store_01_", "sanitize filename");
+  } catch (e) {
+    console.warn("Dev tests skipped/failed:", e);
+  }
+}
+if (typeof window !== "undefined" && !(window as any).__CFD_TESTED__) {
+  (window as any).__CFD_TESTED__ = true;
+  runDevTests();
+}
+
+// -------------------------------
+// UI
+// -------------------------------
+export default function CustomerFlowDashboard() {
+  const [seed, setSeed] = useState(1337);
+  const [selectedDate, setSelectedDate] = useState(new Date()); // defaults to today
+  const [view, setView] = useState<"day" | "week">("day");
+  const [lang, setLang] = useState<"en" | "fr">("en");
+
+  // ---------------- Devices / Stores management ----------------
+  type Device = { id: string; name: string; preset: "auto" | "desktop" | "tablet"; dataSource: "mock" | "api" | "csv" };
+  const DEVICES_KEY = "cfd.devices";
+  const CURRENT_DEVICE_KEY = "cfd.currentDevice";
+  const makeId = () => `dev-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const withDefaults = (d: Partial<Device> & { id: string; name: string }): Device => ({ dataSource: "mock", preset: "auto", ...d } as Device);
+  const loadDevices = (): Device[] => {
     try {
-      const saved = localStorage.getItem(storageKeyForLang(lang));
-      setCustomTitle(saved);
-      setTitleInput(saved ?? "");
+      const raw = typeof window !== "undefined" ? localStorage.getItem(DEVICES_KEY) : null;
+      if (raw) return (JSON.parse(raw) as Device[]).map((x) => ({ dataSource: "mock", ...x }));
     } catch {}
-  }, [lang]);
-  const t = (k)=> (messages[lang] && messages[lang][k]) || k;
-  const displayTitle = customTitle ?? t('dashboardTitle');
-  const startEdit = ()=>{ setTitleInput(displayTitle); setEditingTitle(true); };
-  const commitEdit = ()=>{
-    const val = (titleInput || '').trim();
-    if (!val || val === t('dashboardTitle')) {
-      setCustomTitle(null);
-      try { localStorage.removeItem(storageKeyForLang(lang)); } catch {}
-    } else {
-      setCustomTitle(val);
-      try { localStorage.setItem(storageKeyForLang(lang), val); } catch {}
+    return [withDefaults({ id: "dev-1", name: t("defaultDeviceName", lang) })];
+  };
+  const saveDevices = (list: Device[]) => {
+    try {
+      localStorage.setItem(DEVICES_KEY, JSON.stringify(list));
+    } catch {}
+  };
+  const loadCurrentDevice = (list: Device[]) => {
+    try {
+      const id = typeof window !== "undefined" ? localStorage.getItem(CURRENT_DEVICE_KEY) : null;
+      if (id && list.some((d) => d.id === id)) return id;
+    } catch {}
+    return list[0]?.id;
+  };
+
+  const [devices, setDevices] = useState<Device[]>(() => loadDevices());
+  const [currentDeviceId, setCurrentDeviceId] = useState<string | undefined>(() => loadCurrentDevice(loadDevices()));
+  const currentDevice = devices.find((d) => d.id === currentDeviceId) || devices[0];
+
+  const [managingDevices, setManagingDevices] = useState(false);
+  const [newDeviceName, setNewDeviceName] = useState("");
+  const [newDevicePreset, setNewDevicePreset] = useState<Device["preset"]>("auto");
+
+  useEffect(() => saveDevices(devices), [devices]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(CURRENT_DEVICE_KEY, currentDeviceId || "");
+    } catch {}
+  }, [currentDeviceId]);
+
+  const updateCurrentPreset = (preset: Device["preset"]) => {
+    setDevices((prev) => prev.map((d) => (d.id === currentDevice.id ? { ...d, preset } : d)));
+  };
+  const addDevice = () => {
+    const name = (newDeviceName || "").trim() || `${t("defaultDeviceName", lang)} ${devices.length + 1}`;
+    const dev: Device = { id: makeId(), name, preset: newDevicePreset, dataSource: "mock" };
+    setDevices((prev) => [...prev, dev]);
+    setCurrentDeviceId(dev.id);
+    setNewDeviceName("");
+    setNewDevicePreset("auto");
+  };
+  const removeDevice = (id: string) => {
+    setDevices((prev) => {
+      const list = prev.filter((d) => d.id !== id);
+      const final = list.length ? list : [withDefaults({ id: "dev-1", name: t("defaultDeviceName", lang) })];
+      if (id === currentDeviceId) setCurrentDeviceId(final[0].id);
+      return final;
+    });
+  };
+
+  // ---------------- Title editing ----------------
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
+  const displayTitle = currentDevice?.name || t("dashboardTitle", lang);
+  const startEdit = () => {
+    setTitleInput(displayTitle);
+    setEditingTitle(true);
+  };
+  const commitEdit = () => {
+    const val = (titleInput || "").trim();
+    if (!val) {
+      setEditingTitle(false);
+      setTitleInput(displayTitle);
+      return;
     }
+    // Rename selected store/device so the header mirrors the store name
+    setDevices((prev) => prev.map((d) => (d.id === currentDevice.id ? { ...d, name: val } : d)));
     setEditingTitle(false);
   };
-  const cancelEdit = ()=>{ setEditingTitle(false); setTitleInput(displayTitle); };
+  const cancelEdit = () => {
+    setEditingTitle(false);
+    setTitleInput(displayTitle);
+  };
 
-  const series = React.useMemo(()=> makeMockSeries(90, seed), [seed]);
-  const weekly = React.useMemo(()=> groupByWeek(series), [series]);
-  const dayData = React.useMemo(()=> series.map((r)=>({ name: fmtDateShort(r.date), customers:r.customers, weekday:r.weekday, date:r.date })), [series]);
-  const todayKey = selectedDate.toISOString().slice(0,10);
-  const todayRow = series.find((r)=> r.dateKey===todayKey) ?? series[series.length-1];
-  const hourly = React.useMemo(()=> makeHourlyProfile(99, todayRow?.weekday ?? 3), [todayRow]);
-  const recHours = React.useMemo(()=> recommendedHours(hourly, 6), [hourly]);
+  // ---------------- Data & derived ----------------
+  const series = useMemo(() => makeMockSeries(90, seed), [seed]);
+  const weekly = useMemo(() => groupByWeek(series), [series]);
+  const dayData = useMemo(
+    () => series.map((r) => ({ name: fmtDateShort(r.date), customers: r.customers, weekday: r.weekday, date: r.date })),
+    [series]
+  );
+  const todayKey = selectedDate.toISOString().slice(0, 10);
+  const todayRow = series.find((r) => r.dateKey === todayKey) ?? series.at(-1)!;
+  const hourly = useMemo(() => makeHourlyProfile(99, todayRow?.weekday ?? 3), [todayRow]);
+  const recHours = useMemo(() => recommendedHours(hourly, 6), [hourly]);
 
-  const handleExport = ()=>{
-    const dailyRows = series.map((r)=>({ date:r.dateKey, weekday: dayNamesMap[lang][r.weekday], customers:r.customers }));
-    const weeklyRows = weekly.map((w)=>({ week:w.key, avg_per_day:w.avg, total:w.total }));
-    const hourlyRows = HOURS.map((h)=>({ hour:h, index:hourly[h] }));
-    const dailyLabels = [messages[lang].dateLabel, messages[lang].weekdayLabel, messages[lang].customers];
-    const weeklyLabels = [messages[lang].weekLabel, messages[lang].avgPerDay, messages[lang].totalLabel];
-    const hourlyLabels = [messages[lang].hourLabel, messages[lang].index];
+  const handleExport = () => {
+    const dailyRows = series.map((r) => ({ date: r.dateKey, weekday: dayNamesMap[lang][r.weekday], customers: r.customers }));
+    const weeklyRows = weekly.map((w) => ({ week: w.key, avg_per_day: w.avg, total: w.total }));
+    const hourlyRows = HOURS.map((h) => ({ hour: h, index: hourly[h] }));
+
+    const dailyLabels = [t("dateLabel", lang), t("weekdayLabel", lang), t("customers", lang)];
+    const weeklyLabels = [t("weekLabel", lang), t("avgPerDay", lang), t("totalLabel", lang)];
+    const hourlyLabels = [t("hourLabel", lang), t("index", lang)];
+
     const csv = [
-      `# ${messages[lang].daily}`,
-      toCSVWithHeaders(dailyRows, ['date','weekday','customers'], dailyLabels),
-      '',
-      `# ${messages[lang].weekly}`,
-      toCSVWithHeaders(weeklyRows, ['week','avg_per_day','total'], weeklyLabels),
-      '',
-      `# ${messages[lang].hourlySelected}`,
-      toCSVWithHeaders(hourlyRows, ['hour','index'], hourlyLabels),
-    ].join('\n');
-    const fname = `customer-flow-${todayKey}.csv`;
-    downloadCSV(fname, csv);
+      `# ${t("daily", lang)}`,
+      toCSVWithHeaders(dailyRows, ["date", "weekday", "customers"], dailyLabels),
+      "",
+      `# ${t("weekly", lang)}`,
+      toCSVWithHeaders(weeklyRows, ["week", "avg_per_day", "total"], weeklyLabels),
+      "",
+      `# ${t("hourlySelected", lang)}`,
+      toCSVWithHeaders(hourlyRows, ["hour", "index"], hourlyLabels),
+    ].join("\n");
+
+    downloadCSV(`customer-flow-${sanitizeFileNameSegment(currentDevice?.name)}-${todayKey}.csv`, csv);
   };
 
   const dayCount = todayRow?.customers ?? 0;
-  const last7 = series.slice(-7).reduce((s,r)=> s+r.customers, 0);
+  const last7 = series.slice(-7).reduce((sum, r) => sum + r.customers, 0);
   const weekCount = last7;
-  const recHourBadges = recHours.map((h)=>(
-    <span key={h} style={{border:'1px solid #ddd', borderRadius:6, padding:'2px 6px', fontSize:12, marginRight:4}}>
-      {String(h).padStart(2,'0')}:00–{String((h+1)%24).padStart(2,'0')}
-    </span>
+
+  const recHourBadges = recHours.map((h) => (
+    <Badge key={h} variant="secondary" className="text-xs">
+      {String(h).padStart(2, "0")}:00–{String((h + 1) % 24).padStart(2, "0")}
+    </Badge>
   ));
 
   return (
-    <div style={{minHeight:'100vh', background:'#f8f9fc', color:'#121418'}}>
-      <header style={{position:'sticky', top:0, background:'rgba(255,255,255,.8)', borderBottom:'1px solid #eee', backdropFilter:'blur(6px)'}}>
-        <div style={{maxWidth:1120, margin:'0 auto', padding:'12px 16px', display:'flex', alignItems:'center', gap:8}}>
-          <div style={{display:'flex', alignItems:'center', gap:8}}>
-            <span>📅</span>
+    <div className="min-h-screen w-full bg-[rgb(248,249,252)] text-[rgb(18,20,24)]">
+      {/* Top bar */}
+      <header className="sticky top-0 z-20 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-b">
+        <div className="mx-auto max-w-7xl px-4 py-3 flex items-center gap-3">
+          <div className="flex items-center gap-2 relative group">
+            <CalendarIcon className="w-5 h-5" />
             {editingTitle ? (
-              <input
+              <Input
                 value={titleInput}
-                onChange={(e)=>setTitleInput(e.target.value)}
+                onChange={(e) => setTitleInput(e.target.value)}
                 onBlur={commitEdit}
-                onKeyDown={(e)=>{ if(e.key==='Enter') commitEdit(); if(e.key==='Escape') cancelEdit(); }}
-                placeholder={messages[lang].editTitle}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitEdit();
+                  if (e.key === "Escape") cancelEdit();
+                }}
+                placeholder={t("editTitle", lang)}
                 autoFocus
-                style={{fontSize:18, fontWeight:600, border:'none', outline:'none', background:'transparent'}}
+                className="text-lg md:text-xl font-semibold p-0 h-auto border-0 focus-visible:ring-0 bg-transparent"
               />
             ) : (
               <>
-                <h1 onClick={startEdit} title={messages[lang].editTitle} style={{fontSize:18, fontWeight:600, cursor:'text', margin:0}}>{displayTitle}</h1>
-                <button onClick={startEdit} title={messages[lang].editTitle} style={{marginLeft:4, border:'1px solid #ddd', borderRadius:999, padding:4}}>✏️</button>
+                <h1
+                  className="text-lg md:text-xl font-semibold cursor-text"
+                  onClick={startEdit}
+                  title={t("editTitle", lang)}
+                  role="button"
+                  aria-label={t("editTitle", lang)}
+                >
+                  {displayTitle}
+                </h1>
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  aria-label={t("editTitle", lang)}
+                  className="ml-1 p-1 rounded-full hover:bg-muted/50 transition-opacity opacity-0 group-hover:opacity-100"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
               </>
             )}
           </div>
-          <div style={{marginLeft:'auto', display:'flex', gap:8, alignItems:'center'}}>
-            <select value={view} onChange={(e)=>setView(e.target.value)}>
-              <option value="day">{messages[lang].day}</option>
-              <option value="week">{messages[lang].week}</option>
-            </select>
-            <select value={lang} onChange={(e)=>setLang(e.target.value)}>
-              <option value="en">{messages[lang].english}</option>
-              <option value="fr">{messages[lang].french}</option>
-            </select>
-            <input type="number" value={seed} onChange={(e)=>setSeed(Number(e.target.value)||1)} style={{width:100}}/>
-            <button onClick={()=>setSeed(s=>s+1)}>🔄 {messages[lang].mockData}</button>
-            <button onClick={handleExport}>⬇️ {messages[lang].exportCsv}</button>
+
+          {/* Right side controls */}
+          <div className="ml-auto flex items-center gap-2">
+            <Select value={view} onValueChange={(v: any) => setView(v)}>
+              <SelectTrigger className="w-[120px]"><SelectValue placeholder={t("view", lang)} /></SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="day">{t("day", lang)}</SelectItem>
+                <SelectItem value="week">{t("week", lang)}</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={lang} onValueChange={(v: any) => setLang(v)}>
+              <SelectTrigger className="w-[140px]"><SelectValue placeholder={t("language", lang)} /></SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="en">{t("english", lang)}</SelectItem>
+                <SelectItem value="fr">{t("french", lang)}</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Input
+              className="w-[120px]"
+              type="number"
+              min={1}
+              step={1}
+              value={seed}
+              onChange={(e) => setSeed(Number(e.target.value) || 1)}
+              placeholder="Seed"
+            />
+            <Button variant="outline" onClick={() => setSeed((s) => s + 1)} className="gap-2">
+              <RefreshCw className="w-4 h-4" /> {t("mockData", lang)}
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="w-4 h-4" /> {t("exportCsv", lang)}
+            </Button>
           </div>
         </div>
       </header>
 
-      <main style={{maxWidth:1120, margin:'0 auto', padding:'16px'}}>
-        <p>Live preview build.</p>
-      </main>
-    </div>
-  )
-}
+      {/* Content */}
+      <main className="mx-auto max-w-7xl p-4 md:p-6 grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
+        {/* Left column */}
+        <div className="lg:col-span-2 space-y-4 md:space-y-6">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base md:text-lg">{t("flowRate", lang)} ({view === "day" ? t("daily", lang) : t("weekly", lang)})</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <div className="w-full h-[280px] md:h-[340px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  {view === "day" ? (
+                    <AreaChart data={dayData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+                      <defs>
+                        <linearGradient id="flow" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
+                          <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
+                      <XAxis dataKey="name" interval={6} tick={{ fontSize: 12 }} />
+                      <YAxis width={40} tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(v: any) => [v, t("customers", lang)]} />
+                      <Area type="monotone" dataKey="customers" stroke="#3b82f6" fill="url(#flow)" strokeWidth={2} />
+                    </AreaChart>
+                  ) : (
+                    <BarChart data={weekly as any} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
+                      <XAxis dataKey="key" tick={{ fontSize: 12 }} />
+                      <YAxis width={40} tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(v: any) => [v, t("avgPerDay", lang)]} />
+                      <Bar dataKey="avg" fill="#22c55e" />
+                    </BarChart>
+                  )}
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
 
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Card className="shadow-sm">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm">{t("dayCount", lang)}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <p className="text-3xl md:text-4xl font-semibold tabular-nums">{dayCount}</p>
+                <p className="text-xs text-muted-foreground">{fmtDateShort(todayRow.date)} ({dayNamesMap[lang][todayRow.weekday]})</p>
+              </CardContent>
+            </Card>
+            <Card className="shadow-sm">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm">{t("sevenDayTotal", lang)}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <p className="text-3xl md:text-4xl font-semibold tabular-nums">{weekCount}</p>
+                <p className="text-xs text-muted-foreground">{t("trailingWeek", lang)}</p>
+              </CardContent>
+            </Card>
+            <Card className="shadow-sm">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm">{t("todaysProfile", lang)}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="w-full h-[120px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={HOURS.map((h) => ({ h, v: hourly[h] }))}>
+                      <XAxis dataKey="h" tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 10 }} width={28} />
+                      <Tooltip formatter={(v: any) => [v, t("index", lang)]} labelFormatter={(label: any) => `${label}:00`} />
+                      <Line type="monotone" dataKey="v" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex flex-wrap gap-1 mt-2 items-center">
+                  <Clock3 className="w-4 h-4" />
+                  <span className="text-xs text-muted-foreground mr-1">{t("recommended", lang)} </span>
+                  {recHourBadges}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="shadow-sm">
+              <CardHeader className="pb-1">
+                <CardTitle className="text-sm">{t("notes", lang)}</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <Input placeholder={t("notePlaceholder", lang)} />
+                <p className="text-xs text-muted-foreground mt-2">{t("tip", lang)}</p>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-4 md:space-y-6">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base md:text-lg">{t("planShopping", lang)}</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <Tabs defaultValue="calendar" className="w-full">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="calendar">{t("calendar", lang)}</TabsTrigger>
+                  <TabsTrigger value="hours">{t("bestHours", lang)}</TabsTrigger>
+                </TabsList>
+                <TabsContent value="calendar" className="mt-3">
+                  <Calendar mode="single" selected={selectedDate} onSelect={(d) => d && setSelectedDate(d)} className="rounded-md border" />
+                </TabsContent>
+                <TabsContent value="hours" className="mt-3">
+                  <div className="w-full h-[260px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={HOURS.map((h) => ({ h, v: hourly[h] }))}>
+                        <XAxis dataKey="h" tick={{ fontSize: 12 }} />
+                        <YAxis width={32} tick={{ fontSize: 12 }} />
+                        <Tooltip formatter={(v: any) => [v, t("index", lang)]} labelFormatter={(label: any) => `${label}:00`} />
+                        <Bar dataKey="v" fill="#0ea5e9" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">{recHourBadges}</div>
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base md:text-lg">{t("settings", lang)}</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-2 space-y-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm">{t("currentDevice", lang)}</span>
+                  <div className="flex items-center gap-2">
+                    <Select value={currentDeviceId} onValueChange={(v: any) => setCurrentDeviceId(v)}>
+                      <SelectTrigger className="w-[180px]"><SelectValue placeholder={t("currentDevice", lang)} /></SelectTrigger>
+                      <SelectContent align="end">
+                        {devices.map((d) => (
+                          <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" onClick={() => setManagingDevices((v) => !v)}>
+                      {t("manageDevices", lang)}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm">{t("devicePreset", lang)}</span>
+                  <Select value={currentDevice?.preset || "auto"} onValueChange={(v: any) => updateCurrentPreset(v)}>
+                    <SelectTrigger className="w-[180px]"><SelectValue /></SelectTrigger>
+                    <SelectContent align="end">
+                      <SelectItem value="auto">{t("autoResponsive", lang)}</SelectItem>
+                      <SelectItem value="desktop">{t("desktop", lang)}</SelectItem>
+                      <SelectItem value="tablet">{t("tablet", lang)}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {managingDevices && (
+                  <div className="rounded-lg border p-3 space-y-3 bg-muted/20">
+                    <div className="flex items-center gap-2">
+                      <Input value={newDeviceName} onChange={(e) => setNewDeviceName(e.target.value)} placeholder={t("deviceName", lang)} className="w-[200px]" />
+                      <Select value={newDevicePreset} onValueChange={(v: any) => setNewDevicePreset(v)}>
+                        <SelectTrigger className="w-[150px]"><SelectValue placeholder={t("preset", lang)} /></SelectTrigger>
+                        <SelectContent align="start">
+                          <SelectItem value="auto">{t("autoResponsive", lang)}</SelectItem>
+                          <SelectItem value="desktop">{t("desktop", lang)}</SelectItem>
+                          <SelectItem value="tablet">{t("tablet", lang)}</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button size="sm" onClick={addDevice}>{t("addDevice", lang)}</Button>
+                    </div>
+                    <div className="space-y-2">
+                      {devices.map((d) => (
+                        <div key={d.id} className="flex items-center justify-between gap-2 relative">
+                          <div className="text-sm truncate">
+                            {d.name} <span className="opacity-60">— {t("preset", lang)}: {d.preset}</span>
+                          </div>
+                          <Button variant="ghost" size="sm" onClick={() => removeDevice(d.id)} disabled={devices.length <= 1}>
+                            {t("delete", lang)}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-center pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setManagingDevices(false)}
+                        aria-label={t("manageDevices", lang)}
+                        title={t("manageDevices", lang)}
+                        className="group inline-flex items-center justify-center w-6 h-5 rounded hover:bg-muted/50 text-muted-foreground/70"
+                      >
+                        <ChevronUp className="w-4 h-4 transition-transform group-hover:-translate-y-0.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm">{t("weekStarts", lang)}</span>
+                <Select defaultValue="sun">
+                  <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="sun">{t("sunday", lang)}</SelectItem>
+                    <SelectItem value="mon">{t("mondayIso", lang)}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm">{t("dataSource", lang)}</span>
+                <Select value={currentDevice?.dataSource || "mock"} onValueChange={(v: any) => setDevices((prev) => prev.map((d) => (d.id === currentDeviceId ? { ...d, dataSource: v } : d)))}>
+                  <SelectTrigger className="w-[140px]"><SelectValue /></SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="mock">{t("mock", lang)}</SelectItem>
+                    <SelectItem value="api" disabled>{t("apiComing", lang)}</SelectItem>
+                    <SelectItem value="csv" disabled>{t("csvComing", lang)}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </main>
+
+      <footer className="mx-auto max-w-7xl px-4 pb-6 pt-2 text-xs text-muted-foreground flex flex-col md:flex-row items-start md:items-center gap-2 md:gap-4">
+        <span>{t("footerMock", lang)}</span>
+        <span className="opacity-70">•</span>
+        <span>{t("footerResp", lang)}</span>
+      </footer>
+    </div>
+  );
+}
